@@ -19,7 +19,9 @@ mongo_password=$3
 mkdir -p ${DATA_DIR}
 
 printf "extracting cards to ${DATA_DIR}/${CARDS_EXTRACT_CSV}\n"
-mongoexport -h ${mongo_host} --authenticationDatabase=admin -d ${DATABASE} -c ${CARDS_COLLECTION} -u ${mongo_username} -p ${mongo_password} --type=csv -f name,voodooCardId -o ${DATA_DIR}/${CARDS_EXTRACT_CSV}
+rm -f ${DATA_DIR}/${CARDS_EXTRACT_CSV}
+mongoexport -h ${mongo_host} --authenticationDatabase=admin -d ${DATABASE} -c ${CARDS_COLLECTION} -u ${mongo_username} -p ${mongo_password} --type=csv -f name,voodooId -o ${DATA_DIR}/${CARDS_EXTRACT_CSV}
 
 printf "extracting decks to ${DATA_DIR}/${DECKS_EXTRACT_JSON}\n"
+rm -f ${DATA_DIR}/${DECKS_EXTRACT_JSON}
 mongoexport -h ${mongo_host} --authenticationDatabase=admin -d ${DATABASE} -c ${DECKS_COLLECTION} -u ${mongo_username} -p ${mongo_password} --type=json -o ${DATA_DIR}/${DECKS_EXTRACT_JSON}

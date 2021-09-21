@@ -2,6 +2,7 @@ import getopt
 import json
 import logging
 import sys
+import uuid
 from datetime import datetime
 from decimal import Decimal
 from glob import glob
@@ -12,7 +13,7 @@ import pymongo
 from bson import Decimal128
 from pymongo import MongoClient, UpdateOne
 from pymongo.database import Database
-from pymongo.errors import BulkWriteError, ServerSelectionTimeoutError
+from pymongo.errors import ServerSelectionTimeoutError
 
 LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 
@@ -25,7 +26,6 @@ BATCH_SIZE = 1000
 VOODOO_MONGO_DB = 'voodoo'
 VOODOO_MONGO_COLLECTION_CARDS = 'cards'
 VOODOO_MONGO_COLLECTION_DECKS = 'decks'
-VOODOO_MONGO_COLLECTION_SEQUENCES = 'sequences'
 VOODOO_MONGO_COLLECTION_SETS = 'sets'
 VOODOO_MONGO_COLLECTION_TOURNAMENTS = 'tournaments'
 
@@ -66,23 +66,6 @@ def get_database(hostname: str, port: str, username: str, password: str) -> Data
     return client[VOODOO_MONGO_DB]
 
 
-def create_sequences(db: Database):
-    try:
-        db[VOODOO_MONGO_COLLECTION_SEQUENCES].insert_many([
-            {'_id': 'voodooCardId', 'seq': 0},
-            {'_id': 'voodooSetId', 'seq': 0},
-            {'_id': 'voodooTournamentId', 'seq': 0},
-            {'_id': 'voodooDeckId', 'seq': 0}
-        ], ordered=False)
-    except BulkWriteError:
-        pass
-
-
-def get_next_sequence(db: Database, name: str) -> int:
-    doc = db[VOODOO_MONGO_COLLECTION_SEQUENCES].find_one_and_update({'_id': name}, {'$inc': {'seq': 1}}, upsert=True)
-    return doc['seq']
-
-
 def generate_batch(iterable: Sequence, size: int = BATCH_SIZE) -> Iterable:
     length = len(iterable)
     for index in range(0, length, size):
@@ -92,15 +75,14 @@ def generate_batch(iterable: Sequence, size: int = BATCH_SIZE) -> Iterable:
 def process_cards(db: Database, path: Path):
     logger.info('processing cards')
 
-    f = open(path / MTGJSON_ATOMIC_CARDS_FILE, 'r')
-    cards_data = json.loads(f.read())
-    f.close()
+    with open(path / MTGJSON_ATOMIC_CARDS_FILE, 'r') as f:
+        cards_data = json.loads(f.read())
 
     collection = db[VOODOO_MONGO_COLLECTION_CARDS]
 
     cards_data_list = list(cards_data['data'].items())
 
-    collection.create_index('voodooCardId', unique=True)
+    collection.create_index('voodooId', unique=True)
     collection.create_index([('name', pymongo.TEXT), ('text', pymongo.TEXT)])
 
     for batch in generate_batch(cards_data_list):
@@ -108,10 +90,10 @@ def process_cards(db: Database, path: Path):
         for item in batch:
             data = item[1][0]
 
-            if collection.find_one({'name': data['name']}) is None:
-                data['voodooCardId'] = get_next_sequence(db, 'voodooCardId')
-
-            operations.append(UpdateOne({'name': data['name']}, {'$set': convert_decimal(data)}, upsert=True))
+            operations.append(UpdateOne(
+                {'name': data['name']},
+                {'$set': convert_decimal(data), '$setOnInsert': {'voodooId': str(uuid.uuid4())}},
+                upsert=True))
 
         collection.bulk_write(operations)
 
@@ -121,22 +103,21 @@ def process_cards(db: Database, path: Path):
 def process_sets(db: Database, path: Path):
     logger.info('processing sets')
 
-    f = open(path / MTGJSON_SET_LIST_FILE, 'r')
-    set_data = json.loads(f.read())
-    f.close()
+    with open(path / MTGJSON_SET_LIST_FILE, 'r') as f:
+        set_data = json.loads(f.read())
 
     collection = db[VOODOO_MONGO_COLLECTION_SETS]
 
-    collection.create_index('voodooSetId', unique=True)
+    collection.create_index('voodooId', unique=True)
     collection.create_index([('name', pymongo.TEXT)])
 
     for batch in generate_batch(set_data['data']):
         operations = []
         for item in batch:
-            if collection.find_one({'name': item['name']}) is None:
-                item['voodooSetId'] = get_next_sequence(db, 'voodooSetId')
-
-            operations.append(UpdateOne({'name': item['name']}, {'$set': convert_decimal(item)}, upsert=True))
+            operations.append(UpdateOne(
+                {'name': item['name']},
+                {'$set': convert_decimal(item), '$setOnInsert': {'voodooId': str(uuid.uuid4())}},
+                upsert=True))
 
         collection.bulk_write(operations)
 
@@ -151,25 +132,21 @@ def process_tournaments(db: Database, path: Path):
 
     collection = db[VOODOO_MONGO_COLLECTION_TOURNAMENTS]
 
-    collection.create_index('voodooTournamentId', unique=True)
+    collection.create_index('voodooId', unique=True)
     collection.create_index([('Tournament.Name', pymongo.TEXT), ('Tournament.Date', pymongo.TEXT)])
 
     for batch in generate_batch(tournament_files):
         operations = []
         decks = []
         for item in batch:
-            f = open(item, 'r')
-            data = json.loads(f.read())
-            f.close()
-
-            if collection.find_one({'Tournament.Name': data['Tournament']['Name'],
-                                    'Tournament.Date': data['Tournament']['Date']}) is None:
-                data['voodooTournamentId'] = get_next_sequence(db, 'voodooTournamentId')
+            with open(item, 'r') as f:
+                data = json.loads(f.read())
 
             operations.append(UpdateOne(
                 {'Tournament.Name': data['Tournament']['Name'],
                  'Tournament.Date': data['Tournament']['Date']},
-                {'$set': convert_decimal(data)}, upsert=True))
+                {'$set': convert_decimal(data), '$setOnInsert': {'voodooId': str(uuid.uuid4())}},
+                upsert=True))
             decks = decks + data['Decks']
 
         process_decks(db, decks)
@@ -184,17 +161,16 @@ def process_decks(db: Database, decks: List):
 
     collection = db[VOODOO_MONGO_COLLECTION_DECKS]
 
-    collection.create_index('voodooDeckId', unique=True)
+    collection.create_index('voodooId', unique=True)
     collection.create_index([('Date', pymongo.TEXT), ('Player', pymongo.TEXT), ('Result', pymongo.TEXT)])
 
     for batch in generate_batch(decks):
         operations = []
         for item in batch:
-            if collection.find_one({'Date': item['Date'], 'Player': item['Player'], 'Result': item['Result']}) is None:
-                item['voodooDeckId'] = get_next_sequence(db, 'voodooDeckId')
-
-            operations.append(UpdateOne({'Date': item['Date'], 'Player': item['Player'], 'Result': item['Result']},
-                                        {'$set': convert_decimal(item)}, upsert=True))
+            operations.append(UpdateOne(
+                {'Date': item['Date'], 'Player': item['Player'], 'Result': item['Result']},
+                {'$set': convert_decimal(item), '$setOnInsert': {'voodooId': str(uuid.uuid4())}},
+                upsert=True))
 
         collection.bulk_write(operations)
 
@@ -268,14 +244,15 @@ def main():
 
     db = get_database(hostname, port, username, password)
 
-    create_sequences(db)
-
     process_cards(db, data_path)
     process_sets(db, data_path)
     process_tournaments(db, data_path)
 
     elapsed = datetime.now() - start
-    logger.info(f'voodoo dataloader completed in {(elapsed.seconds % 3600) // 60}m {elapsed.seconds % 60}s')
+    hours = elapsed.seconds // 3600
+    minutes = elapsed.seconds // 60 % 60
+    seconds = elapsed.seconds % 60
+    logger.info(f'voodoo dataloader completed in {hours}h {minutes}m {seconds}s')
 
 
 if __name__ == '__main__':
