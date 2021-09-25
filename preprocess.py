@@ -8,7 +8,6 @@ from datetime import datetime
 from multiprocessing import Pool
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from pandas import DataFrame
 
@@ -33,15 +32,16 @@ def generate_batch(iterable: Sequence, size: int = BATCH_SIZE) -> Iterable:
 
 
 def preprocess_deck(deck: dict, cards_df: DataFrame) -> DataFrame:
-    deck_preprocessed_df = pd.concat(
-        [pd.json_normalize(deck['Mainboard']), pd.json_normalize(deck['Sideboard'])], axis=0)
-    deck_preprocessed_df['CardName'] = deck_preprocessed_df['CardName'].str.lower()
-    deck_preprocessed_df = deck_preprocessed_df.groupby(['CardName']).sum().reset_index()
-    deck_preprocessed_df = pd.merge(cards_df, deck_preprocessed_df, how='left', on='CardName').replace(np.nan, 0)
-    deck_preprocessed_df = deck_preprocessed_df.drop(['CardName'], axis=1).set_index('voodooId').transpose()
-    deck_preprocessed_df.insert(0, 'deckId', [deck['voodooId']])
+    deck_df = pd.concat([pd.json_normalize(deck['Mainboard']), pd.json_normalize(deck['Sideboard'])], axis=0)
+    deck_df['CardName'] = deck_df['CardName'].str.lower()
+    deck_df = deck_df.groupby(['CardName']).sum().reset_index()
+    deck_df = pd.merge(deck_df, cards_df, how='left', on='CardName')
+    deck_df = deck_df.drop(['CardName'], axis=1)
+    deck_df['deckId'] = deck['voodooId']
+    deck_df = deck_df[['deckId', 'voodooId', 'Count']]
+    deck_df = deck_df.set_index('deckId')
 
-    return deck_preprocessed_df
+    return deck_df
 
 
 def preprocess(data_path: Path):
@@ -52,8 +52,7 @@ def preprocess(data_path: Path):
     cards_df.rename(columns={'name': 'CardName'}, inplace=True)
     cards_df['CardName'] = cards_df['CardName'].str.lower()
 
-    headers = cards_df.drop(['CardName'], axis=1).set_index('voodooId').transpose()
-    headers.insert(0, 'deckId', [])
+    headers = pd.DataFrame({'deckId': [], 'voodooId': [], 'Count': []})
     headers.to_csv(data_path / DECKS_PREPROCESSED_CSV, index=False)
 
     logger.info('loading decks')
